@@ -33,13 +33,16 @@ def main():
     parsed_args = singer.utils.parse_args(REQUIRED_CONFIG_KEYS)
     config = parsed_args.config
 
+    request_timeout = parsed_args.config.get('request_timeout', REQUEST_TIMEOUT)
     with LinkedinClient(parsed_args.config.get('client_id', None),
                         parsed_args.config.get('client_secret', None),
                         parsed_args.config.get('refresh_token', None),
                         parsed_args.config.get('access_token'),
                         parsed_args.config_path,
-                        REQUEST_TIMEOUT,
-                        parsed_args.config['user_agent']
+                        request_timeout,
+                        parsed_args.config['user_agent'],
+                        token_file_path=parsed_args.config.get('token_file_path'),
+                        refresh_token_expires_at=parsed_args.config.get('refresh_token_expires_at'),
                         ) as client:
 
         state = {}

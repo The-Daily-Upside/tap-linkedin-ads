@@ -800,6 +800,33 @@ class AccountUsers(LinkedInAds):
         "q": "accounts"
     }
 
+    def sync_endpoint(self, *args, **kwargs):
+        """
+        LinkedIn only returns users for the first account when several are passed
+        to q=accounts (all API versions). Query one account at a time.
+        """
+        account_list = kwargs.get("account_list") or []
+        if len(account_list) <= 1:
+            return super().sync_endpoint(*args, **kwargs)
+
+        base_params = {
+            key: value
+            for key, value in self.params.items()
+            if not str(key).startswith("accounts[")
+        }
+        total_records = 0
+        max_bookmark_value = None
+        for account_id in account_list:
+            self.params = dict(base_params)
+            self.params["accounts[0]"] = "urn:li:sponsoredAccount:{}".format(account_id)
+            record_count, bookmark_value = super().sync_endpoint(*args, **kwargs)
+            total_records += record_count or 0
+            if bookmark_value is None:
+                continue
+            if max_bookmark_value is None or strptime_to_utc(bookmark_value) > strptime_to_utc(max_bookmark_value):
+                max_bookmark_value = bookmark_value
+        return total_records, max_bookmark_value
+
 class CampaignGroups(LinkedInAds):
     """
     https://docs.microsoft.com/en-us/linkedin/marketing/integrations/ads/account-structure/create-and-manage-campaign-groups#search-for-campaign-groups

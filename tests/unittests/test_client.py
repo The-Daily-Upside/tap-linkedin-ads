@@ -158,3 +158,52 @@ class TestLinkedInClient(unittest.TestCase):
 
         client.get_token_expires()
         self.assertEqual(mock_logger.warning.call_count, 0)
+
+
+class TestTokenFile(unittest.TestCase):
+    """Durable token file wins over a stale Meltano config access token."""
+
+    def test_token_file_overlays_matching_refresh_token(self):
+        import tempfile
+        import json as _json
+        import os
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'tokens.json')
+            with open(path, 'w', encoding='utf-8') as handle:
+                _json.dump({
+                    'access_token': 'from-file',
+                    'refresh_token': 'same-refresh',
+                    'refresh_token_expires_at': '2027-10-01T00:00:00Z',
+                }, handle)
+
+            client = _client.LinkedinClient(
+                'client_id', 'client_secret', 'same-refresh', 'from-env',
+                None, token_file_path=path,
+            )
+            client._load_persisted_tokens()
+            self.assertEqual(client.access_token, 'from-file')
+
+    def test_config_refresh_token_wins_after_reauth(self):
+        import tempfile
+        import json as _json
+        import os
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'tokens.json')
+            with open(path, 'w', encoding='utf-8') as handle:
+                _json.dump({
+                    'access_token': 'old-access',
+                    'refresh_token': 'old-refresh',
+                }, handle)
+
+            client = _client.LinkedinClient(
+                'client_id', 'client_secret', 'new-refresh', 'new-access',
+                None, token_file_path=path,
+            )
+            # No HTTP: the new refresh token is present and we do not call
+            # fetch in a way that refreshes. Load happens first; mismatch keeps
+            # the config access token. Stop before the expiry check by clearing
+            # the refresh token after load via a direct call.
+            client._load_persisted_tokens()
+            self.assertEqual(client.access_token, 'new-access')
