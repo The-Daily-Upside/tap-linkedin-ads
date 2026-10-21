@@ -437,3 +437,51 @@ class TestAccountUsersMultiAccount(unittest.TestCase):
             stream.get_bookmark(state, '2020-01-01T00:00:00Z'),
             '2020-01-01T00:00:00Z',
         )
+
+    def test_legacy_string_bookmark_applies_only_to_first_account(self):
+        stream = STREAMS['account_users']()
+        state = {'bookmarks': {'account_users': '2024-06-01T00:00:00.000000Z'}}
+        seen = []
+
+        def fake_sync(self, *args, **kwargs):
+            cursor = self.get_bookmark(kwargs.get('state'), '2020-01-01T00:00:00Z')
+            seen.append(cursor)
+            return 1, cursor
+
+        with mock.patch.object(LinkedInAds, 'sync_endpoint', fake_sync):
+            total, bookmark = stream.sync_endpoint(
+                state=state,
+                account_list=['111', '222'],
+            )
+
+        self.assertEqual(total, 2)
+        self.assertEqual(seen, [
+            '2024-06-01T00:00:00.000000Z',
+            '2020-01-01T00:00:00Z',
+        ])
+        self.assertEqual(bookmark, {
+            '111': '2024-06-01T00:00:00.000000Z',
+            '222': '2020-01-01T00:00:00Z',
+        })
+        self.assertIsNone(stream._bookmark_account_id)
+        self.assertIsNone(stream._legacy_bookmark_account_id)
+
+    def test_single_account_reads_its_cursor_from_dict_bookmark(self):
+        stream = STREAMS['account_users']()
+        state = {'bookmarks': {'account_users': {
+            '111': '2024-06-01T00:00:00.000000Z',
+            '222': '2024-02-01T00:00:00.000000Z',
+        }}}
+        seen = {}
+
+        def fake_sync(self, *args, **kwargs):
+            seen['bookmark'] = self.get_bookmark(kwargs.get('state'), '2020-01-01T00:00:00Z')
+            return 1, seen['bookmark']
+
+        with mock.patch.object(LinkedInAds, 'sync_endpoint', fake_sync):
+            total, bookmark = stream.sync_endpoint(state=state, account_list=['222'])
+
+        self.assertEqual(total, 1)
+        self.assertEqual(seen['bookmark'], '2024-02-01T00:00:00.000000Z')
+        self.assertEqual(bookmark, '2024-02-01T00:00:00.000000Z')
+        self.assertIsNone(stream._bookmark_account_id)
