@@ -116,7 +116,7 @@ LinkedIn Marketing APIs have no service-account or client-credentials flow that 
 
 Set `client_id`, `client_secret`, `refresh_token`, and the initial `access_token`. Optional `token_file_path` is where the tap writes the latest tokens (mode `0600`). Meltano rebuilds its config from environment variables every run, so without that file the refreshed access token would be discarded and the tap would refresh again on the next run. That still works, but the file avoids a refresh call every sync once the env access token goes stale. If you re-authorize, put the new `refresh_token` in config and delete the token file (a different refresh token in config wins over the file).
 
-`scripts/exchange_auth_code.py` prints the authorize URL and exchanges the redirect `code` for both tokens.
+`scripts/exchange_auth_code.py` prints the authorize URL and exchanges the redirect `code` for both tokens. The exchange is refused unless `state` on the redirect matches the `state` that was sent on the authorize URL.
 
 If the tap receives a 401 invalid token response and no refresh token is configured, the error logs say the access token has expired and the connection must be re-authenticated.
 This is described more in [LinkedIn OAuth 2.0 Docs](https://docs.microsoft.com/en-us/linkedin/shared/authentication/authorization-code-flow?context=linkedin/context).
@@ -162,8 +162,15 @@ To generate the **access_token**:
       - URL pattern: Provide the scope from permissions above (with + delimiting each permission) and replace the other highlighted parameters: https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=YOUR_CLIENT_ID&redirect_uri=YOUR_REDIRECT_URI&scope=YOUR_PERMISSIONS_SCOPE&state=YOUR_STATE_KEY
     - In web browser, navigate to Authorization URL.
     - Once redirected, click “Allow” to authorize app.
-    - The browser will be redirected to the redirect_uri. Record the **code** parameter listed in the redirect URL in the Browser header URL.
-5. Exchange the code (or run `scripts/exchange_auth_code.py`). The JSON includes `access_token`, `expires_in` (~60 days), `refresh_token`, and `refresh_token_expires_in` (~365 days). Keep the refresh token. Re-authorize when it expires; refreshing does not move that date.
+    - The browser will be redirected to the redirect_uri. Copy that full URL. It contains `code` and the same `state` you sent.
+5. Exchange only after `state` matches. Pass the same `--state` from the authorize URL and the full redirect URL. The script compares them before the token request. The JSON includes `access_token`, `expires_in` (~60 days), `refresh_token`, and `refresh_token_expires_in` (~365 days). Keep the refresh token. Re-authorize when it expires; refreshing does not move that date.
+```bash
+python scripts/exchange_auth_code.py \
+    --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET \
+    --redirect-uri YOUR_REDIRECT_URI --state YOUR_STATE_KEY \
+    --redirect-url 'THE_FULL_REDIRECT_URL' \
+    --out /path/to/linkedin-ads-tokens.json
+```
 ```bash
 > curl -0 -v -X POST https://www.linkedin.com/oauth/v2/accessToken\
     -H "Accept: application/json"\

@@ -9,11 +9,13 @@ env values and delete the old token file so the new grant wins.
 
 Example:
   python scripts/exchange_auth_code.py --print-auth-url \\
-    --client-id ID --redirect-uri https://www.google.com
+    --client-id ID --redirect-uri http://localhost:8080/callback \\
+    --state STATE
 
   python scripts/exchange_auth_code.py \\
     --client-id ID --client-secret SECRET \\
-    --redirect-uri https://www.google.com --code CODE \\
+    --redirect-uri http://localhost:8080/callback --state STATE \\
+    --redirect-url 'http://localhost:8080/callback?code=CODE&state=STATE' \\
     --out /path/to/linkedin-ads-tokens.json
 """
 
@@ -31,6 +33,61 @@ from datetime import datetime, timedelta, timezone
 TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
 AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization"
 DEFAULT_SCOPES = "r_ads r_ads_reporting"
+
+
+def _states_match(expected, returned):
+    """Constant-time compare of the CSRF values. Different lengths are a mismatch."""
+    if not expected or not returned:
+        return False
+    expected = str(expected)
+    returned = str(returned)
+    if len(expected) != len(returned):
+        return False
+    return secrets.compare_digest(expected, returned)
+
+
+def _fill_code_and_returned_state(args):
+    """
+    Read code and state from the browser redirect. Return an error string, or None.
+    The token request has not been made yet.
+    """
+    if not args.redirect_url:
+        return None
+    parsed = urllib.parse.urlparse(args.redirect_url)
+    query = urllib.parse.parse_qs(parsed.query)
+    if "code" not in query and "state" not in query and parsed.fragment:
+        query = urllib.parse.parse_qs(parsed.fragment)
+    error = (query.get("error") or [None])[0]
+    if error:
+        description = (query.get("error_description") or [""])[0]
+        return "LinkedIn authorization failed: {} {}".format(error, description).strip()
+    parsed_code = (query.get("code") or [None])[0]
+    parsed_state = (query.get("state") or [None])[0]
+    if args.code and parsed_code and args.code != parsed_code:
+        return "--code does not match the code in --redirect-url."
+    if args.returned_state and parsed_state and not _states_match(args.returned_state, parsed_state):
+        return "--returned-state does not match the state in --redirect-url."
+    if not args.code:
+        args.code = parsed_code
+    if not args.returned_state:
+        args.returned_state = parsed_state
+    return None
+
+
+def _check_csrf_state(args):
+    """Reject the exchange unless the redirect state is the one we sent."""
+    if not args.state:
+        return "Pass --state with the same value that was sent on the authorize URL."
+    if not args.returned_state:
+        return (
+            "Pass --returned-state or --redirect-url so the redirect state "
+            "can be checked before the authorization code is spent."
+        )
+    if not _states_match(args.state, args.returned_state):
+        return "OAuth state mismatch. Refusing to exchange this authorization code."
+    if not args.code:
+        return "Pass --code or --redirect-url with the authorization code from the redirect."
+    return None
 
 
 def _print_auth_url(args):
@@ -114,27 +171,36 @@ def _exchange(args):
     return 0
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--client-id", required=True)
     parser.add_argument("--client-secret")
     parser.add_argument("--redirect-uri", required=True)
     parser.add_argument("--scopes", default=DEFAULT_SCOPES)
-    parser.add_argument("--state", default=None, help="CSRF token. A random value is used when omitted.")
+    parser.add_argument("--state", default=None, help="CSRF token sent on the authorize URL. Required when exchanging a code.")
+    parser.add_argument("--returned-state", help="state query parameter from the redirect URL")
+    parser.add_argument("--redirect-url", help="Full browser redirect URL. code and state are read from it.")
     parser.add_argument("--code", help="Authorization code from the redirect URL")
     parser.add_argument("--out", help="Token file path the tap reads via token_file_path")
     parser.add_argument("--print-auth-url", action="store_true")
-    args = parser.parse_args()
-    if not args.state:
-        args.state = secrets.token_hex(16)
-
+    args = parser.parse_args(argv)
     if args.print_auth_url:
+        if not args.state:
+            args.state = secrets.token_hex(16)
         _print_auth_url(args)
         return 0
     if not args.out:
         parser.error("--out is required so tokens are written to a file before the one-time code is spent")
-    if not args.code or not args.client_secret:
-        parser.error("--code and --client-secret are required unless --print-auth-url is set")
+    if not args.client_secret:
+        parser.error("--client-secret is required unless --print-auth-url is set")
+    redirect_error = _fill_code_and_returned_state(args)
+    if redirect_error:
+        print(redirect_error, file=sys.stderr)
+        return 1
+    state_error = _check_csrf_state(args)
+    if state_error:
+        print(state_error, file=sys.stderr)
+        return 1
     return _exchange(args)
 
 
