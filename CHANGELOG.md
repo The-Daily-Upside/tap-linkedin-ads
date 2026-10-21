@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.9.0
+  * Bump Marketing API version to `202609` (`202511` sunsets 2026-11-16)
+  * Persist refreshed tokens to `token_file_path` so Meltano's throwaway config does not drop them
+  * Warn from `refresh_token_expires_in` (the refresh token is 365 days and is not extended on refresh)
+  * Honor `request_timeout` from config
+  * Query `account_users` one ad account at a time (LinkedIn ignores every account after the first)
+
 ## 2.8.0
   * Raise error on inaccessible accounts [#88](https://github.com/singer-io/tap-linkedin-ads/pull/88)
   * Accept URN based account IDs
