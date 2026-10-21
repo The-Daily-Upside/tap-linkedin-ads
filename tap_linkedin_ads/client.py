@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 import os
+import tempfile
 import time
 import json
 import backoff
@@ -262,19 +263,27 @@ class LinkedinClient: # pylint: disable=too-many-instance-attributes
         path = self.__token_file_path
         if not path:
             return
-        directory = os.path.dirname(path)
-        tmp_path = path + '.tmp'
+        directory = os.path.dirname(path) or "."
+        tmp_path = None
         try:
-            if directory:
-                os.makedirs(directory, exist_ok=True)
-            with open(tmp_path, 'w', encoding='utf-8') as file:
+            os.makedirs(directory, exist_ok=True)
+            # Unique 0600 file from the start. A predictable "*.tmp" name can be
+            # swapped for a symlink before chmod, and open() would follow it.
+            fd, tmp_path = tempfile.mkstemp(prefix=".linkedin-ads-", suffix=".json", dir=directory)
+            with os.fdopen(fd, "w", encoding="utf-8") as file:
                 json.dump(self._token_payload(), file, indent=2)
-                file.write('\n')
-            os.chmod(tmp_path, 0o600)
+                file.write("\n")
             os.replace(tmp_path, path)
+            tmp_path = None
             LOGGER.info('Wrote LinkedIn tokens to %s', path)
         except OSError as exc:
             LOGGER.warning('Could not persist LinkedIn tokens to %s: %s', path, exc)
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     def write_access_token_to_config(self):
         """

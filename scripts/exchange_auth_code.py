@@ -22,6 +22,7 @@ import json
 import os
 import secrets
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -87,19 +88,22 @@ def _exchange(args):
         "refresh_token": payload["refresh_token"],
         "refresh_token_expires_at": refresh_expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    if not args.out:
-        print("Pass --out so the tokens are written to a mode-0600 file instead of the terminal.", file=sys.stderr)
-        return 1
-
-    directory = os.path.dirname(args.out)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    tmp_path = args.out + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as handle:
-        json.dump(token_file, handle, indent=2)
-        handle.write("\n")
-    os.chmod(tmp_path, 0o600)
-    os.replace(tmp_path, args.out)
+    directory = os.path.dirname(os.path.abspath(args.out)) or "."
+    os.makedirs(directory, exist_ok=True)
+    # Unique 0600 file. A fixed "<out>.tmp" name can be replaced with a symlink
+    # before chmod, and open() would follow it.
+    fd, tmp_path = tempfile.mkstemp(prefix=".linkedin-ads-", suffix=".json", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(token_file, handle, indent=2)
+            handle.write("\n")
+        os.replace(tmp_path, args.out)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
     print("Wrote tokens to {} (mode 0600).".format(args.out), file=sys.stderr)
     print("Put these in the Meltano environment. Do not commit them.")
@@ -127,6 +131,8 @@ def main():
     if args.print_auth_url:
         _print_auth_url(args)
         return 0
+    if not args.out:
+        parser.error("--out is required so tokens are written to a file before the one-time code is spent")
     if not args.code or not args.client_secret:
         parser.error("--code and --client-secret are required unless --print-auth-url is set")
     return _exchange(args)

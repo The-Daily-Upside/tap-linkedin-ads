@@ -411,9 +411,29 @@ class TestAccountUsersMultiAccount(unittest.TestCase):
             total, bookmark = stream.sync_endpoint(account_list=['111', '222'])
 
         self.assertEqual(total, 5)
-        self.assertEqual(bookmark, '2024-06-01T00:00:00.000000Z')
+        self.assertEqual(bookmark, {
+            '111': '2024-01-01T00:00:00.000000Z',
+            '222': '2024-06-01T00:00:00.000000Z',
+        })
         self.assertEqual(len(seen), 2)
         self.assertEqual(seen[0]['accounts[0]'], 'urn:li:sponsoredAccount:111')
         self.assertEqual(seen[1]['accounts[0]'], 'urn:li:sponsoredAccount:222')
         self.assertNotIn('accounts[1]', seen[0])
         self.assertNotIn('accounts[1]', seen[1])
+
+    def test_bookmark_stays_on_each_account(self):
+        stream = STREAMS['account_users']()
+        state = {'bookmarks': {'account_users': {
+            '111': '2024-06-01T00:00:00.000000Z',
+            '222': '2024-02-01T00:00:00.000000Z',
+        }}}
+        stream._bookmark_account_id = '222'
+        self.assertEqual(
+            stream.get_bookmark(state, '2020-01-01T00:00:00Z'),
+            '2024-02-01T00:00:00.000000Z',
+        )
+        stream._bookmark_account_id = '333'
+        self.assertEqual(
+            stream.get_bookmark(state, '2020-01-01T00:00:00Z'),
+            '2020-01-01T00:00:00Z',
+        )
