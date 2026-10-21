@@ -387,3 +387,33 @@ class TestLinkedInAds(unittest.TestCase):
             ACCOUNT_OBJ.write_record([], '')
 
         mock_logger.assert_called_with('record: %s', [])
+
+
+class TestAccountUsersMultiAccount(unittest.TestCase):
+    """adAccountUsers only honors the first account, so each id is requested alone."""
+
+    def test_one_request_per_account_and_max_bookmark(self):
+        stream = STREAMS['account_users']()
+        stream.params = {
+            'q': 'accounts',
+            'accounts[0]': 'urn:li:sponsoredAccount:111',
+            'accounts[1]': 'urn:li:sponsoredAccount:222',
+        }
+        seen = []
+
+        def fake_sync(self, *args, **kwargs):
+            seen.append(dict(self.params))
+            if self.params['accounts[0]'].endswith('111'):
+                return 2, '2024-01-01T00:00:00.000000Z'
+            return 3, '2024-06-01T00:00:00.000000Z'
+
+        with mock.patch.object(LinkedInAds, 'sync_endpoint', fake_sync):
+            total, bookmark = stream.sync_endpoint(account_list=['111', '222'])
+
+        self.assertEqual(total, 5)
+        self.assertEqual(bookmark, '2024-06-01T00:00:00.000000Z')
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(seen[0]['accounts[0]'], 'urn:li:sponsoredAccount:111')
+        self.assertEqual(seen[1]['accounts[0]'], 'urn:li:sponsoredAccount:222')
+        self.assertNotIn('accounts[1]', seen[0])
+        self.assertNotIn('accounts[1]', seen[1])

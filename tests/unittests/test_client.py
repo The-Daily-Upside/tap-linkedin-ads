@@ -140,6 +140,17 @@ class TestLinkedInClient(unittest.TestCase):
             "The refresh token is going to expire soon. Please re-authenticate your connection to generate a new token and resume extraction."
         )
 
+    def test_inactive_token_without_created_at(self, mocked_post, mock_write_token):
+        '''An inactive introspection payload may omit created_at and must still count as expired.'''
+        client = _client.LinkedinClient('client_id', 'client_secret', 'refresh_token', 'access_token', 'config_path')
+        mocked_response = mock.Mock()
+        mocked_response.status_code = 200
+        mocked_response.json.return_value = {"active": False}
+        mocked_post.return_value = mocked_response
+
+        expires = client.get_token_expires()
+        self.assertLess(expires, datetime.utcnow())
+
     @mock.patch("tap_linkedin_ads.client.LOGGER")
     def test_refresh_token_empty_expires_after_2_month(self, mock_logger, mocked_post, mock_write_token):
         '''

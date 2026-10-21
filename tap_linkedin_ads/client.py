@@ -338,7 +338,9 @@ class LinkedinClient: # pylint: disable=too-many-instance-attributes
                 self.__expires = datetime.fromtimestamp(data['expires_at'])
 
             # Display a warning message to inform the customer about the upcoming refresh token expiry in advance, helping to prevent sync failures.
-            if datetime.fromtimestamp(data['created_at']) + timedelta(days=334) < datetime.utcnow():
+            # Inactive tokens often omit created_at; a missing field must not block refresh.
+            created_at = data.get('created_at')
+            if created_at and datetime.fromtimestamp(created_at) + timedelta(days=334) < datetime.utcnow():
                 LOGGER.warning('The refresh token is going to expire soon. '
                                'Please re-authenticate your connection to generate a new token and resume extraction.')
 

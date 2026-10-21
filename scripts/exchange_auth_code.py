@@ -20,6 +20,7 @@ Example:
 import argparse
 import json
 import os
+import secrets
 import sys
 import urllib.error
 import urllib.parse
@@ -86,23 +87,25 @@ def _exchange(args):
         "refresh_token": payload["refresh_token"],
         "refresh_token_expires_at": refresh_expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    if args.out:
-        directory = os.path.dirname(args.out)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        tmp_path = args.out + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump(token_file, handle, indent=2)
-            handle.write("\n")
-        os.chmod(tmp_path, 0o600)
-        os.replace(tmp_path, args.out)
-        print("Wrote {}".format(args.out), file=sys.stderr)
+    if not args.out:
+        print("Pass --out so the tokens are written to a mode-0600 file instead of the terminal.", file=sys.stderr)
+        return 1
 
-    print("Put these in the Meltano environment (do not commit them):")
+    directory = os.path.dirname(args.out)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    tmp_path = args.out + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(token_file, handle, indent=2)
+        handle.write("\n")
+    os.chmod(tmp_path, 0o600)
+    os.replace(tmp_path, args.out)
+
+    print("Wrote tokens to {} (mode 0600).".format(args.out), file=sys.stderr)
+    print("Put these in the Meltano environment. Do not commit them.")
+    print("Copy access_token and refresh_token from that file.")
+    print("Set TAP_LINKEDIN_ADS_CLIENT_SECRET from the LinkedIn app Auth tab (it is not printed here).")
     print("TAP_LINKEDIN_ADS_CLIENT_ID={}".format(args.client_id))
-    print("TAP_LINKEDIN_ADS_CLIENT_SECRET={}".format(args.client_secret))
-    print("TAP_LINKEDIN_ADS_REFRESH_TOKEN={}".format(payload["refresh_token"]))
-    print("TAP_LINKEDIN_ADS_ACCESS_TOKEN={}".format(payload["access_token"]))
     print("TAP_LINKEDIN_ADS_REFRESH_TOKEN_EXPIRES_AT={}".format(token_file["refresh_token_expires_at"]))
     return 0
 
@@ -113,11 +116,13 @@ def main():
     parser.add_argument("--client-secret")
     parser.add_argument("--redirect-uri", required=True)
     parser.add_argument("--scopes", default=DEFAULT_SCOPES)
-    parser.add_argument("--state", default="tdu-linkedin-ads")
+    parser.add_argument("--state", default=None, help="CSRF token. A random value is used when omitted.")
     parser.add_argument("--code", help="Authorization code from the redirect URL")
     parser.add_argument("--out", help="Token file path the tap reads via token_file_path")
     parser.add_argument("--print-auth-url", action="store_true")
     args = parser.parse_args()
+    if not args.state:
+        args.state = secrets.token_hex(16)
 
     if args.print_auth_url:
         _print_auth_url(args)
