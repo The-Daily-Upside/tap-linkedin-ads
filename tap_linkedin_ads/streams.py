@@ -824,8 +824,8 @@ class AccountUsers(LinkedInAds):
 
     def sync_endpoint(self, *args, **kwargs):
         """
-        LinkedIn only returns users for the first account when several are passed
-        to q=accounts (all API versions). Query one account at a time.
+        LinkedIn's q=accounts finder returns users for the first account only.
+        Request each configured account on its own and keep that account's bookmark.
         """
         account_list = kwargs.get("account_list") or []
         if len(account_list) <= 1:
