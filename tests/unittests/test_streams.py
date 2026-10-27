@@ -5,7 +5,7 @@ from parameterized import parameterized
 import unittest
 from singer.schema import Schema
 from singer.catalog import Catalog, CatalogEntry
-from tap_linkedin_ads.streams import split_into_chunks, get_next_url, shift_sync_window, merge_responses, sync_analytics_endpoint, STREAMS, LinkedInAds
+from tap_linkedin_ads.streams import split_into_chunks, get_next_url, shift_sync_window, merge_responses, sync_analytics_endpoint, advance_child_bookmark, STREAMS, LinkedInAds
 import tap_linkedin_ads.client as _client
 from tap_linkedin_ads.client import LinkedinClient
 
@@ -483,5 +483,43 @@ class TestAccountUsersMultiAccount(unittest.TestCase):
 
         self.assertEqual(total, 1)
         self.assertEqual(seen['bookmark'], '2024-02-01T00:00:00.000000Z')
-        self.assertEqual(bookmark, '2024-02-01T00:00:00.000000Z')
+        self.assertEqual(bookmark, {
+            '111': '2024-06-01T00:00:00.000000Z',
+            '222': '2024-02-01T00:00:00.000000Z',
+        })
         self.assertIsNone(stream._bookmark_account_id)
+
+    def test_one_account_sync_keeps_other_account_cursors(self):
+        stream = STREAMS['account_users']()
+        state = {'bookmarks': {'account_users': {
+            '111': '2024-06-01T00:00:00.000000Z',
+            '222': '2024-02-01T00:00:00.000000Z',
+        }}}
+
+        def fake_sync(self, *args, **kwargs):
+            return 1, '2024-07-01T00:00:00.000000Z'
+
+        with mock.patch.object(LinkedInAds, 'sync_endpoint', fake_sync):
+            total, bookmark = stream.sync_endpoint(state=state, account_list=['111'])
+
+        self.assertEqual(total, 1)
+        self.assertEqual(bookmark, {
+            '111': '2024-07-01T00:00:00.000000Z',
+            '222': '2024-02-01T00:00:00.000000Z',
+        })
+
+    def test_child_bookmark_map_is_merged(self):
+        current = {
+            '111': '2024-06-01T00:00:00.000000Z',
+            '222': '2024-02-01T00:00:00.000000Z',
+        }
+        updated = advance_child_bookmark(current, {
+            '111': '2024-08-01T00:00:00.000000Z',
+        })
+        self.assertEqual(updated['111'], '2024-08-01T00:00:00.000000Z')
+        self.assertEqual(updated['222'], '2024-02-01T00:00:00.000000Z')
+        scalar = advance_child_bookmark(
+            '2024-01-01T00:00:00.000000Z',
+            '2024-03-01T00:00:00.000000Z',
+        )
+        self.assertIsNone(scalar)
