@@ -46,16 +46,30 @@ def _build_ad_analytics_probe_date_range():
         'dateRange.end.year': end.year,
     }
 
+def later_bookmark(current, new_value):
+    """Keep the newer timestamp. An older value must not rewind a saved cursor."""
+    if not new_value or isinstance(new_value, dict):
+        return current
+    if not current or isinstance(current, dict):
+        return new_value
+    try:
+        if strptime_to_utc(str(new_value)) > strptime_to_utc(str(current)):
+            return new_value
+    except Exception:
+        return new_value
+    return current
+
+
 def advance_child_bookmark(current, new_value):
     """
     Keep the latest child cursor. A per-account map is merged so one account's
-    cursor cannot replace the others.
+    cursor cannot replace the others, and an older timestamp cannot rewind one.
     """
     if isinstance(new_value, dict):
         merged = dict(current) if isinstance(current, dict) else {}
         for account_id, bookmark_value in new_value.items():
-            if bookmark_value:
-                merged[str(account_id)] = bookmark_value
+            key = str(account_id)
+            merged[key] = later_bookmark(merged.get(key), bookmark_value)
         return merged
     return None
 
@@ -880,7 +894,8 @@ class AccountUsers(LinkedInAds):
                 record_count, bookmark_value = super().sync_endpoint(*args, **kwargs)
                 total_records += record_count or 0
                 if bookmark_value and not isinstance(bookmark_value, dict):
-                    per_account[account_id] = bookmark_value
+                    per_account[account_id] = later_bookmark(
+                        per_account.get(account_id), bookmark_value)
         finally:
             self._bookmark_account_id = None
             self._legacy_bookmark_account_id = None

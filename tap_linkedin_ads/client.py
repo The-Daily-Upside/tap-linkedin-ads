@@ -246,6 +246,9 @@ class LinkedinClient: # pylint: disable=too-many-instance-attributes
                 'Config refresh token expires after %s; using the config grant.',
                 path,
             )
+            # The new access token may still be valid, so no refresh runs.
+            # Replace the file now or the next run loads the old grant again.
+            self._write_token_file()
             return
         if stored.get('access_token'):
             self.__access_token = stored['access_token']

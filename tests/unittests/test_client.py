@@ -217,6 +217,11 @@ class TestTokenFile(unittest.TestCase):
             client._load_persisted_tokens()
             self.assertEqual(client.access_token, 'new-access')
             self.assertEqual(client._LinkedinClient__refresh_token, 'new-refresh')
+            with open(path, encoding='utf-8') as handle:
+                written = _json.load(handle)
+            self.assertEqual(written['access_token'], 'new-access')
+            self.assertEqual(written['refresh_token'], 'new-refresh')
+            self.assertEqual(written['refresh_token_expires_at'], '2027-11-01T00:00:00Z')
 
     def test_rotated_refresh_token_in_file_wins(self):
         import tempfile

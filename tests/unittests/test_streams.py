@@ -508,6 +508,25 @@ class TestAccountUsersMultiAccount(unittest.TestCase):
             '222': '2024-02-01T00:00:00.000000Z',
         })
 
+    def test_older_cursor_does_not_rewind_an_account(self):
+        stream = STREAMS['account_users']()
+        state = {'bookmarks': {'account_users': {
+            '111': '2024-06-01T00:00:00.000000Z',
+        }}}
+
+        def fake_sync(self, *args, **kwargs):
+            return 1, '2024-01-01T00:00:00.000000Z'
+
+        with mock.patch.object(LinkedInAds, 'sync_endpoint', fake_sync):
+            _, bookmark = stream.sync_endpoint(state=state, account_list=['111'])
+
+        self.assertEqual(bookmark['111'], '2024-06-01T00:00:00.000000Z')
+        merged = advance_child_bookmark(
+            {'111': '2024-06-01T00:00:00.000000Z'},
+            {'111': '2024-01-01T00:00:00.000000Z'},
+        )
+        self.assertEqual(merged['111'], '2024-06-01T00:00:00.000000Z')
+
     def test_child_bookmark_map_is_merged(self):
         current = {
             '111': '2024-06-01T00:00:00.000000Z',
