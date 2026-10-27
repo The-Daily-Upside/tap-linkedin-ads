@@ -1,7 +1,7 @@
 # Changelog
 
 ## 2.9.0
-  * Bump Marketing API version to `202609` (`202511` sunsets 2026-11-16)
+  * Bump Marketing API version to `202610` (October 2026; `202511` sunsets 2026-11-16)
   * Persist refreshed tokens to `token_file_path` so Meltano's throwaway config does not drop them
   * Warn from `refresh_token_expires_in` (the refresh token is 365 days and is not extended on refresh)
   * Honor `request_timeout` from config

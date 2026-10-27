@@ -6,7 +6,7 @@ spec](https://github.com/singer-io/getting-started/blob/master/SPEC.md).
 
 This tap:
 
-- Pulls raw data from the [LinkedIn Marketing API](https://learn.microsoft.com/en-us/linkedin/marketing/) version `202609` (`LinkedIn-Version` header)
+- Pulls raw data from the [LinkedIn Marketing API](https://learn.microsoft.com/en-us/linkedin/marketing/) version `202610` (`LinkedIn-Version` header)
 - Extracts the following resources:
   - [Ad Accounts](https://docs.microsoft.com/en-us/linkedin/marketing/integrations/ads/account-structure/create-and-manage-accounts#search-for-accounts)
     - [Video Ads](https://docs.microsoft.com/en-us/linkedin/marketing/integrations/ads/advertising-targeting/create-and-manage-video#finders)
@@ -114,7 +114,7 @@ LinkedIn Marketing APIs have no service-account or client-credentials flow that 
 - **Refresh token:** 365 days from the member consent that created it. Refreshing the access token does **not** extend it. The member must re-authorize once a year.
 - Programmatic refresh tokens are only returned for approved Marketing Developer Platform apps. See [Refresh tokens](https://learn.microsoft.com/en-us/linkedin/shared/authentication/programmatic-refresh-tokens).
 
-Set `client_id`, `client_secret`, `refresh_token`, and the initial `access_token`. Optional `token_file_path` is where the tap writes the latest tokens (mode `0600`). Meltano rebuilds its config from environment variables every run, so without that file the refreshed access token would be discarded and the tap would refresh again on the next run. That still works, but the file avoids a refresh call every sync once the env access token goes stale. If you re-authorize, put the new `refresh_token` in config and delete the token file (a different refresh token in config wins over the file).
+Set `client_id`, `client_secret`, `refresh_token`, and the initial `access_token`. Optional `token_file_path` is where the tap writes the latest tokens (mode `0600`). Meltano rebuilds its config from environment variables every run, so without that file the refreshed access token would be discarded and the tap would refresh again on the next run. The file wins over those env values, including when LinkedIn rotates the refresh token. A re-authorization replaces the file when the new `refresh_token` is different and `refresh_token_expires_at` is later than the expiry in the file. Deleting the file also lets the env grant take over.
 
 `scripts/exchange_auth_code.py` prints the authorize URL and exchanges the redirect `code` for both tokens. The exchange is refused unless `state` on the redirect matches the `state` that was sent on the authorize URL.
 
@@ -171,17 +171,7 @@ python scripts/exchange_auth_code.py \
     --redirect-url 'THE_FULL_REDIRECT_URL' \
     --out /path/to/linkedin-ads-tokens.json
 ```
-```bash
-> curl -0 -v -X POST https://www.linkedin.com/oauth/v2/accessToken\
-    -H "Accept: application/json"\
-    -H "application/x-www-form-urlencoded"\
-    -d "grant_type=authorization_code"\
-    -d "code=YOUR_CODE"\
-    -d "client_id=YOUR_CLIENT_ID"\
-    -d "client_secret=YOUR_CLIENT_SECRET"\
-    -d "state=YOUR_STATE_KEY"\
-    -d "redirect_uri=YOUR_REDIRECT_URI"
-```
+The token endpoint does not check `state`. Use the script above so the redirect `state` is compared locally before the code is spent.
 6. Create config.json. `accounts` is one or more numeric ad account ids, comma-separated (URNs are accepted). See [config.json.example](config.json.example).
 ```json
 {

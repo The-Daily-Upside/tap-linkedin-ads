@@ -13,9 +13,9 @@ LOGGER = singer.get_logger()
 BASE_URL = 'https://api.linkedin.com/rest'
 LINKEDIN_TOKEN_URI = 'https://www.linkedin.com/oauth/v2/accessToken'
 INTROSPECTION_URI = 'https://www.linkedin.com/oauth/v2/introspectToken'
-# Latest Marketing API version as of 2026-10. 202511 sunsets 2026-11-16.
+# October 2026 Marketing API (LinkedIn-Version: 202610). Sunsets 2027-10-15.
 # https://learn.microsoft.com/en-us/linkedin/marketing/versioning
-LINKEDIN_VERSION = '202609'
+LINKEDIN_VERSION = '202610'
 
 # set default timeout of 300 seconds
 REQUEST_TIMEOUT = 300
@@ -197,13 +197,29 @@ class LinkedinClient: # pylint: disable=too-many-instance-attributes
             return datetime.strptime(text, '%Y-%m-%dT%H:%M:%S')
         return datetime.strptime(text[:10], '%Y-%m-%d')
 
-    def _load_persisted_tokens(self):
-        """Prefer tokens in the durable token file over the Meltano config.
+    def _config_grant_is_newer(self, stored_refresh, stored_expiry):
+        """A re-auth has a different refresh token and a later expiry than the file.
 
-        Meltano rebuilds config from environment variables on every run, so an
-        access token written back to that temp file does not survive. The token
-        file does. A different refresh_token in config means the member
-        re-authorized; that new grant replaces the file.
+        LinkedIn can also rotate the refresh token on an ordinary refresh. That
+        rotation does not move the expiry, so a different string alone is not a
+        new grant. Treating it as one would throw away the durable file and
+        keep using the original env token.
+        """
+        if not stored_refresh or not self.__refresh_token:
+            return False
+        if stored_refresh == self.__refresh_token:
+            return False
+        if not self.__refresh_token_expires_at or not stored_expiry:
+            return False
+        return self.__refresh_token_expires_at > stored_expiry
+
+    def _load_persisted_tokens(self):
+        """Prefer the durable token file over Meltano's env-built config.
+
+        Meltano rebuilds config from environment variables on every run, so the
+        file holds the latest access token and any rotated refresh token. A
+        re-authorization replaces the file only when its refresh token differs
+        and its expiry is later than the one stored in the file.
         """
         path = self.__token_file_path
         if not path or not os.path.isfile(path):
@@ -218,9 +234,16 @@ class LinkedinClient: # pylint: disable=too-many-instance-attributes
             return
 
         stored_refresh = stored.get('refresh_token')
-        if stored_refresh and self.__refresh_token and stored_refresh != self.__refresh_token:
+        stored_expiry = None
+        expires_at = stored.get('refresh_token_expires_at')
+        if expires_at:
+            try:
+                stored_expiry = self._parse_token_expiry(expires_at)
+            except ValueError:
+                LOGGER.warning('Ignoring invalid refresh_token_expires_at in %s', path)
+        if self._config_grant_is_newer(stored_refresh, stored_expiry):
             LOGGER.info(
-                'Config refresh_token does not match %s; using the config grant.',
+                'Config refresh token expires after %s; using the config grant.',
                 path,
             )
             return
@@ -228,12 +251,8 @@ class LinkedinClient: # pylint: disable=too-many-instance-attributes
             self.__access_token = stored['access_token']
         if stored_refresh:
             self.__refresh_token = stored_refresh
-        expires_at = stored.get('refresh_token_expires_at')
-        if expires_at:
-            try:
-                self.__refresh_token_expires_at = self._parse_token_expiry(expires_at)
-            except ValueError:
-                LOGGER.warning('Ignoring invalid refresh_token_expires_at in %s', path)
+        if stored_expiry:
+            self.__refresh_token_expires_at = stored_expiry
 
     def _warn_if_refresh_token_expiring(self):
         expires_at = self.__refresh_token_expires_at

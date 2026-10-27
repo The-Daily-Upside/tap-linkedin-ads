@@ -206,15 +206,37 @@ class TestTokenFile(unittest.TestCase):
                 _json.dump({
                     'access_token': 'old-access',
                     'refresh_token': 'old-refresh',
+                    'refresh_token_expires_at': '2027-10-01T00:00:00Z',
                 }, handle)
 
             client = _client.LinkedinClient(
                 'client_id', 'client_secret', 'new-refresh', 'new-access',
                 None, token_file_path=path,
+                refresh_token_expires_at='2027-11-01T00:00:00Z',
             )
-            # No HTTP: the new refresh token is present and we do not call
-            # fetch in a way that refreshes. Load happens first; mismatch keeps
-            # the config access token. Stop before the expiry check by clearing
-            # the refresh token after load via a direct call.
             client._load_persisted_tokens()
             self.assertEqual(client.access_token, 'new-access')
+            self.assertEqual(client._LinkedinClient__refresh_token, 'new-refresh')
+
+    def test_rotated_refresh_token_in_file_wins(self):
+        import tempfile
+        import json as _json
+        import os
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'tokens.json')
+            with open(path, 'w', encoding='utf-8') as handle:
+                _json.dump({
+                    'access_token': 'from-file',
+                    'refresh_token': 'rotated-refresh',
+                    'refresh_token_expires_at': '2027-10-01T00:00:00Z',
+                }, handle)
+
+            client = _client.LinkedinClient(
+                'client_id', 'client_secret', 'original-refresh', 'from-env',
+                None, token_file_path=path,
+                refresh_token_expires_at='2027-10-01T00:00:00Z',
+            )
+            client._load_persisted_tokens()
+            self.assertEqual(client.access_token, 'from-file')
+            self.assertEqual(client._LinkedinClient__refresh_token, 'rotated-refresh')
