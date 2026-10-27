@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta
+import os
+import tempfile
 import time
 import json
 import backoff
@@ -11,7 +13,9 @@ LOGGER = singer.get_logger()
 BASE_URL = 'https://api.linkedin.com/rest'
 LINKEDIN_TOKEN_URI = 'https://www.linkedin.com/oauth/v2/accessToken'
 INTROSPECTION_URI = 'https://www.linkedin.com/oauth/v2/introspectToken'
-LINKEDIN_VERSION = '202511'
+# October 2026 Marketing API (LinkedIn-Version: 202610). Sunsets 2027-10-15.
+# https://learn.microsoft.com/en-us/linkedin/marketing/versioning
+LINKEDIN_VERSION = '202610'
 
 # set default timeout of 300 seconds
 REQUEST_TIMEOUT = 300
@@ -129,13 +133,22 @@ class LinkedinClient: # pylint: disable=too-many-instance-attributes
                  access_token,
                  config_path,
                  request_timeout=REQUEST_TIMEOUT,
-                 user_agent=None):
+                 user_agent=None,
+                 token_file_path=None,
+                 refresh_token_expires_at=None):
         self.__client_id = client_id
         self.__client_secret = client_secret
         self.__refresh_token = refresh_token
         self.__config_path = config_path
         self.__user_agent = user_agent
         self.__access_token = access_token
+        self.__token_file_path = token_file_path or None
+        self.__refresh_token_expires_at = None
+        if refresh_token_expires_at:
+            try:
+                self.__refresh_token_expires_at = self._parse_token_expiry(refresh_token_expires_at)
+            except ValueError:
+                LOGGER.warning('Ignoring invalid refresh_token_expires_at: %s', refresh_token_expires_at)
         self.__expires = None
         self.__session = requests.Session()
         self.__base_url = None
@@ -176,6 +189,124 @@ class LinkedinClient: # pylint: disable=too-many-instance-attributes
         return self.__expires
 
 
+    @staticmethod
+    def _parse_token_expiry(value):
+        text = str(value).strip().replace('Z', '')
+        if len(text) >= 19 and text[10] in ('T', ' '):
+            text = text[:19].replace(' ', 'T')
+            return datetime.strptime(text, '%Y-%m-%dT%H:%M:%S')
+        return datetime.strptime(text[:10], '%Y-%m-%d')
+
+    def _config_grant_is_newer(self, stored_refresh, stored_expiry):
+        """A re-auth has a different refresh token and a later expiry than the file.
+
+        LinkedIn can also rotate the refresh token on an ordinary refresh. That
+        rotation does not move the expiry, so a different string alone is not a
+        new grant. Treating it as one would throw away the durable file and
+        keep using the original env token.
+        """
+        if not stored_refresh or not self.__refresh_token:
+            return False
+        if stored_refresh == self.__refresh_token:
+            return False
+        if not self.__refresh_token_expires_at or not stored_expiry:
+            return False
+        return self.__refresh_token_expires_at > stored_expiry
+
+    def _load_persisted_tokens(self):
+        """Prefer the durable token file over Meltano's env-built config.
+
+        Meltano rebuilds config from environment variables on every run, so the
+        file holds the latest access token and any rotated refresh token. A
+        re-authorization replaces the file only when its refresh token differs
+        and its expiry is later than the one stored in the file.
+        """
+        path = self.__token_file_path
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            with open(path, encoding='utf-8') as file:
+                stored = json.load(file)
+        except (OSError, ValueError) as exc:
+            LOGGER.warning('Could not read LinkedIn token file %s: %s', path, exc)
+            return
+        if not isinstance(stored, dict):
+            return
+
+        stored_refresh = stored.get('refresh_token')
+        stored_expiry = None
+        expires_at = stored.get('refresh_token_expires_at')
+        if expires_at:
+            try:
+                stored_expiry = self._parse_token_expiry(expires_at)
+            except ValueError:
+                LOGGER.warning('Ignoring invalid refresh_token_expires_at in %s', path)
+        if self._config_grant_is_newer(stored_refresh, stored_expiry):
+            LOGGER.info(
+                'Config refresh token expires after %s; using the config grant.',
+                path,
+            )
+            # The new access token may still be valid, so no refresh runs.
+            # Replace the file now or the next run loads the old grant again.
+            self._write_token_file()
+            return
+        if stored.get('access_token'):
+            self.__access_token = stored['access_token']
+        if stored_refresh:
+            self.__refresh_token = stored_refresh
+        if stored_expiry:
+            self.__refresh_token_expires_at = stored_expiry
+
+    def _warn_if_refresh_token_expiring(self):
+        expires_at = self.__refresh_token_expires_at
+        if not expires_at:
+            return
+        # Refreshing the access token does not extend the refresh token (365 days
+        # from the original member consent).
+        if expires_at - timedelta(days=31) < datetime.utcnow():
+            LOGGER.warning(
+                'LinkedIn refresh token expires %s. Re-authorize before then. '
+                'Refreshing the access token does not extend the refresh token.',
+                expires_at.strftime('%Y-%m-%d'),
+            )
+
+    def _token_payload(self):
+        payload = {
+            'access_token': self.__access_token,
+            'refresh_token': self.__refresh_token,
+        }
+        if self.__refresh_token_expires_at:
+            payload['refresh_token_expires_at'] = (
+                self.__refresh_token_expires_at.strftime('%Y-%m-%dT%H:%M:%SZ')
+            )
+        return payload
+
+    def _write_token_file(self):
+        path = self.__token_file_path
+        if not path:
+            return
+        directory = os.path.dirname(path) or "."
+        tmp_path = None
+        try:
+            os.makedirs(directory, exist_ok=True)
+            # Unique 0600 file from the start. A predictable "*.tmp" name can be
+            # swapped for a symlink before chmod, and open() would follow it.
+            fd, tmp_path = tempfile.mkstemp(prefix=".linkedin-ads-", suffix=".json", dir=directory)
+            with os.fdopen(fd, "w", encoding="utf-8") as file:
+                json.dump(self._token_payload(), file, indent=2)
+                file.write("\n")
+            os.replace(tmp_path, path)
+            tmp_path = None
+            LOGGER.info('Wrote LinkedIn tokens to %s', path)
+        except OSError as exc:
+            LOGGER.warning('Could not persist LinkedIn tokens to %s: %s', path, exc)
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
     def write_access_token_to_config(self):
         """
         Write an updated access token in the config to reuse in the next sync.
@@ -183,15 +314,25 @@ class LinkedinClient: # pylint: disable=too-many-instance-attributes
         But after 2 months whenever we do an introspection call, access_token would
         always be found as expired because the config still contains the same access_token.
         So, whenever we generate a new access_token, it would be updated in the config.
-        """
-        # Update config at config_path
-        with open(self.__config_path) as file:
-            config = json.load(file)
-        # Set new access_token
-        config['access_token'] = self.__access_token
 
-        with open(self.__config_path, 'w') as file:
-            json.dump(config, file, indent=2)
+        Meltano passes a throwaway config file, so also write token_file_path when set.
+        A read-only config must not fail the sync; the in-memory token is already set.
+        """
+        self._write_token_file()
+        if not self.__config_path:
+            return
+        try:
+            with open(self.__config_path, encoding='utf-8') as file:
+                config = json.load(file)
+            config.update(self._token_payload())
+            with open(self.__config_path, 'w', encoding='utf-8') as file:
+                json.dump(config, file, indent=2)
+        except (OSError, ValueError) as exc:
+            LOGGER.warning(
+                'Could not persist LinkedIn tokens to config %s: %s',
+                self.__config_path,
+                exc,
+            )
 
     @backoff.on_exception(backoff.expo,
                           (Server5xxError, LinkedInUnauthorizedError),
@@ -220,10 +361,17 @@ class LinkedinClient: # pylint: disable=too-many-instance-attributes
                 raise_for_error(response)
 
             data = response.json()
-            self.__expires = datetime.fromtimestamp(data['expires_at'])
+            # Introspection of an expired token returns active=false. Treat that as
+            # already expired so fetch_and_set_access_token refreshes instead of looping.
+            if data.get('active') is False or not data.get('expires_at'):
+                self.__expires = datetime.utcnow() - timedelta(seconds=1)
+            else:
+                self.__expires = datetime.fromtimestamp(data['expires_at'])
 
             # Display a warning message to inform the customer about the upcoming refresh token expiry in advance, helping to prevent sync failures.
-            if datetime.fromtimestamp(data['created_at']) + timedelta(days=334) < datetime.utcnow():
+            # Inactive tokens often omit created_at; a missing field must not block refresh.
+            created_at = data.get('created_at')
+            if created_at and datetime.fromtimestamp(created_at) + timedelta(days=334) < datetime.utcnow():
                 LOGGER.warning('The refresh token is going to expire soon. '
                                'Please re-authenticate your connection to generate a new token and resume extraction.')
 
@@ -259,8 +407,15 @@ class LinkedinClient: # pylint: disable=too-many-instance-attributes
         # Technically this self.__expires is inaccurate because it was true when LinkedIn generated the token, but
         # we receive and process that response some (very) small amount of time after it was true.
         self.__expires = datetime.utcnow() + timedelta(seconds=data['expires_in'])
+        if data.get('refresh_token'):
+            self.__refresh_token = data['refresh_token']
+        if data.get('refresh_token_expires_in'):
+            self.__refresh_token_expires_at = datetime.utcnow() + timedelta(
+                seconds=int(data['refresh_token_expires_in'])
+            )
 
         self.write_access_token_to_config()
+        self._warn_if_refresh_token_expiring()
 
     def fetch_and_set_access_token(self):
         """
@@ -271,6 +426,8 @@ class LinkedinClient: # pylint: disable=too-many-instance-attributes
         # If the refresh token is not provided then we are assuming that it is an old connection
         # and client has provided the valid access_token already
         # Checking if the token is expired, It will be refreshed
+        self._load_persisted_tokens()
+        self._warn_if_refresh_token_expiring()
         if not self.__refresh_token:
             return
 

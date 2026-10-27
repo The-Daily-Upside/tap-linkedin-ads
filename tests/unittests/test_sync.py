@@ -4,6 +4,7 @@ from parameterized import parameterized
 from singer.schema import Schema
 from singer.catalog import Catalog, CatalogEntry
 from tap_linkedin_ads.sync import get_page_size, get_streams_to_sync, update_currently_syncing, sync
+from tap_linkedin_ads.streams import STREAMS
 from tap_linkedin_ads.client import LinkedinClient
 
 DEFAULT_PAGE_SIZE = 100
@@ -127,6 +128,12 @@ class TestSyncUtils(unittest.TestCase):
         actual_parent_streams = get_streams_to_sync(selected_streams)
         
         self.assertEqual(expected_parent_streams, actual_parent_streams)
+
+    def test_account_users_is_scheduled_on_its_own(self):
+        """account_users is not an accounts child. The accounts parent does not pass an account id to children."""
+        self.assertEqual(get_streams_to_sync(['account_users']), ['account_users'])
+        self.assertIsNone(STREAMS['account_users'].parent)
+        self.assertNotIn('account_users', STREAMS['accounts'].children)
     
     @parameterized.expand([
         ['test_reset_existing_currently_syncing', {'currently_syncing': 'a'}, None, 0],

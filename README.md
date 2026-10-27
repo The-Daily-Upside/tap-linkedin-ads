@@ -6,7 +6,7 @@ spec](https://github.com/singer-io/getting-started/blob/master/SPEC.md).
 
 This tap:
 
-- Pulls raw data from the [LinkedIn Marketing Ads July 2022](https://docs.microsoft.com/en-us/linkedin/marketing/)
+- Pulls raw data from the [LinkedIn Marketing API](https://learn.microsoft.com/en-us/linkedin/marketing/) version `202610` (`LinkedIn-Version` header)
 - Extracts the following resources:
   - [Ad Accounts](https://docs.microsoft.com/en-us/linkedin/marketing/integrations/ads/account-structure/create-and-manage-accounts#search-for-accounts)
     - [Video Ads](https://docs.microsoft.com/en-us/linkedin/marketing/integrations/ads/advertising-targeting/create-and-manage-video#finders)
@@ -108,7 +108,17 @@ This tap:
 - Parent: campaign
 
 ## Authentication
-The tap uses a LinkedIn provided **access_token** in the config settings to make API requests. Access tokens expire after 60 days and require a user to manually authenticate again. If the tap receives a 401 invalid token response, the error logs will state that your access token has expired and to re-authenticate your connection to generate a new token.
+LinkedIn Marketing APIs have no service-account or client-credentials flow that works for ads. This tap uses 3-legged OAuth for an approved [Marketing Developer Platform](https://www.linkedin.com/developers/apps) app.
+
+- **Access token:** about 60 days. The tap refreshes it with the refresh token when it is inside one day of expiry (or already inactive).
+- **Refresh token:** 365 days from the member consent that created it. Refreshing the access token does **not** extend it. The member must re-authorize once a year.
+- Programmatic refresh tokens are only returned for approved Marketing Developer Platform apps. See [Refresh tokens](https://learn.microsoft.com/en-us/linkedin/shared/authentication/programmatic-refresh-tokens).
+
+Set `client_id`, `client_secret`, `refresh_token`, and the initial `access_token`. Optional `token_file_path` is where the tap writes the latest tokens (mode `0600`). Meltano rebuilds its config from environment variables every run, so without that file the refreshed access token would be discarded and the tap would refresh again on the next run. The file wins over those env values, including when LinkedIn rotates the refresh token. A re-authorization replaces the file when the new `refresh_token` is different and `refresh_token_expires_at` is later than the expiry in the file. Deleting the file also lets the env grant take over.
+
+`scripts/exchange_auth_code.py` prints the authorize URL and exchanges the redirect `code` for both tokens. The exchange is refused unless `state` on the redirect matches the `state` that was sent on the authorize URL.
+
+If the tap receives a 401 invalid token response and no refresh token is configured, the error logs say the access token has expired and the connection must be re-authenticated.
 This is described more in [LinkedIn OAuth 2.0 Docs](https://docs.microsoft.com/en-us/linkedin/shared/authentication/authorization-code-flow?context=linkedin/context).
 
 The API user account should be assigned one of the following roles:
@@ -146,32 +156,33 @@ To generate the **access_token**:
     - Oauth 2.0 settings: Provide a **redirect_uri** (for later steps): https://www.google.com
     - Review the “Products” tab and ensure “Marketing Developer Platform” has been added and approved (listed in the “added products” section).
     - Review the “Usage & limits” tab. This shows the daily application and user/member limits with percent used for each resource endpoint.
-4. Authorize App: The authorization token lasts 60-days before expiring. The tap app will need to be reauthorized when the authorization token expires.
+4. Authorize App: The access token lasts 60 days. The refresh token lasts 365 days from this consent, then the member must re-authorize. `scripts/exchange_auth_code.py --print-auth-url` builds the URL below.
     - Create an Authorization URL with the following pattern
       - Create a random alphanumeric **state_key** (used to prevent [CRSF](https://en.wikipedia.org/wiki/Cross-site_request_forgery)).
       - URL pattern: Provide the scope from permissions above (with + delimiting each permission) and replace the other highlighted parameters: https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=YOUR_CLIENT_ID&redirect_uri=YOUR_REDIRECT_URI&scope=YOUR_PERMISSIONS_SCOPE&state=YOUR_STATE_KEY
     - In web browser, navigate to Authorization URL.
     - Once redirected, click “Allow” to authorize app.
-    - The browser will be redirected to the redirect_uri. Record the **code** parameter listed in the redirect URL in the Browser header URL.
-5. Run the following curl command with the parameters replaced to return your access_token. The access_token expires in 2-months.
+    - The browser will be redirected to the redirect_uri. Copy that full URL. It contains `code` and the same `state` you sent.
+5. Exchange only after `state` matches. Pass the same `--state` from the authorize URL and the full redirect URL. The script compares them before the token request. The JSON includes `access_token`, `expires_in` (~60 days), `refresh_token`, and `refresh_token_expires_in` (~365 days). Keep the refresh token. Re-authorize when it expires; refreshing does not move that date.
 ```bash
-> curl -0 -v -X POST https://www.linkedin.com/oauth/v2/accessToken\
-    -H "Accept: application/json"\
-    -H "application/x-www-form-urlencoded"\
-    -d "grant_type=authorization_code"\
-    -d "code=YOUR_CODE"\
-    -d "client_id=YOUR_CLIENT_ID"\
-    -d "client_secret=YOUR_CLIENT_SECRET"\
-    -d "state=YOUR_STATE_KEY"\
-    -d "redirect_uri=YOUR_REDIRECT_URI"
+python scripts/exchange_auth_code.py \
+    --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET \
+    --redirect-uri YOUR_REDIRECT_URI --state YOUR_STATE_KEY \
+    --redirect-url 'THE_FULL_REDIRECT_URL' \
+    --out /path/to/linkedin-ads-tokens.json
 ```
-6. Create config.json and include the access_token:
+The token endpoint does not check `state`. Use the script above so the redirect `state` is compared locally before the code is spent.
+6. Create config.json. `accounts` is one or more numeric ad account ids, comma-separated (URNs are accepted). See [config.json.example](config.json.example).
 ```json
 {
-  "start_date": "2019-01-01T00:00:00Z",
+  "start_date": "2024-01-01T00:00:00Z",
   "user_agent": "tap-linkedin-ads <api_user_email@your_company.com>",
+  "client_id": "YOUR_CLIENT_ID",
+  "client_secret": "YOUR_CLIENT_SECRET",
+  "refresh_token": "YOUR_REFRESH_TOKEN",
   "access_token": "YOUR_ACCESS_TOKEN",
-  "accounts": null,
+  "token_file_path": "/absolute/path/linkedin-ads-tokens.json",
+  "accounts": "123456789",
   "request_timeout": 300
 }
 ```

@@ -46,6 +46,34 @@ def _build_ad_analytics_probe_date_range():
         'dateRange.end.year': end.year,
     }
 
+def later_bookmark(current, new_value):
+    """Keep the newer timestamp. An older value must not rewind a saved cursor."""
+    if not new_value or isinstance(new_value, dict):
+        return current
+    if not current or isinstance(current, dict):
+        return new_value
+    try:
+        if strptime_to_utc(str(new_value)) > strptime_to_utc(str(current)):
+            return new_value
+    except Exception:
+        return new_value
+    return current
+
+
+def advance_child_bookmark(current, new_value):
+    """
+    Keep the latest child cursor. A per-account map is merged so one account's
+    cursor cannot replace the others, and an older timestamp cannot rewind one.
+    """
+    if isinstance(new_value, dict):
+        merged = dict(current) if isinstance(current, dict) else {}
+        for account_id, bookmark_value in new_value.items():
+            key = str(account_id)
+            merged[key] = later_bookmark(merged.get(key), bookmark_value)
+        return merged
+    return None
+
+
 def write_bookmark(state, value, stream_name):
     """
     Write the bookmark in the state corresponding to the stream.
@@ -563,12 +591,18 @@ class LinkedInAds:
                                     parent_id=parent_id,
                                     account_list=[acct_id])
 
-                            child_batch_bookmark_dttm = strptime_to_utc(child_batch_bookmark_value)
-                            child_max_bookmark = child_max_bookmarks.get(child_stream_name)
-                            child_max_bookmark_dttm = strptime_to_utc(child_max_bookmark)
-                            if child_batch_bookmark_dttm > child_max_bookmark_dttm:
-                                # Update bookmark for child stream.
-                                child_max_bookmarks[child_stream_name] = strftime(child_batch_bookmark_dttm)
+                            merged_bookmark = advance_child_bookmark(
+                                child_max_bookmarks.get(child_stream_name),
+                                child_batch_bookmark_value)
+                            if merged_bookmark is None:
+                                child_batch_bookmark_dttm = strptime_to_utc(child_batch_bookmark_value)
+                                child_max_bookmark = child_max_bookmarks.get(child_stream_name)
+                                child_max_bookmark_dttm = strptime_to_utc(child_max_bookmark)
+                                if child_batch_bookmark_dttm > child_max_bookmark_dttm:
+                                    # Update bookmark for child stream.
+                                    child_max_bookmarks[child_stream_name] = strftime(child_batch_bookmark_dttm)
+                            else:
+                                child_max_bookmarks[child_stream_name] = merged_bookmark
 
                             LOGGER.info('Synced: %s, parent_id: %s, total_records: %s',
                                         child_stream_name,
@@ -799,6 +833,73 @@ class AccountUsers(LinkedInAds):
     params = {
         "q": "accounts"
     }
+
+    def get_bookmark(self, state, default):
+        """
+        Keep a cursor per ad account. One shared maximum would advance every
+        account to the newest row and skip older rows on the other accounts.
+        A legacy string bookmark only describes the first configured account.
+        LinkedIn ignored every later account, so those start at start_date.
+        """
+        stored = None
+        if state and 'bookmarks' in state:
+            stored = state['bookmarks'].get(self.tap_stream_id)
+        account_id = getattr(self, "_bookmark_account_id", None)
+        if isinstance(stored, dict):
+            if account_id and stored.get(str(account_id)):
+                return stored[str(account_id)]
+            return default
+        if stored is None:
+            return default
+        legacy_account_id = getattr(self, "_legacy_bookmark_account_id", None)
+        if legacy_account_id and str(account_id) != str(legacy_account_id):
+            return default
+        return stored
+
+    def sync_endpoint(self, *args, **kwargs):
+        """
+        Synced on its own, not as an accounts child. LinkedIn's q=accounts finder
+        returns users for the first account only, so each configured account is
+        requested alone. The return value is always the per-account bookmark map.
+        A scalar cursor would be written over the map and the next run would
+        apply one account's cursor to the others.
+        """
+        account_list = [str(account_id) for account_id in (kwargs.get("account_list") or [])]
+        if not account_list:
+            return super().sync_endpoint(*args, **kwargs)
+
+        state = kwargs.get("state")
+        stored = None
+        if state and 'bookmarks' in state:
+            stored = state['bookmarks'].get(self.tap_stream_id)
+        per_account = dict(stored) if isinstance(stored, dict) else {}
+        # The saved string is the first account's cursor. Later accounts were
+        # never returned, so they must not inherit it.
+        legacy_account_id = None
+        if stored is not None and not isinstance(stored, dict):
+            legacy_account_id = account_list[0]
+
+        base_params = {
+            key: value
+            for key, value in self.params.items()
+            if not str(key).startswith("accounts[")
+        }
+        total_records = 0
+        try:
+            self._legacy_bookmark_account_id = legacy_account_id
+            for account_id in account_list:
+                self.params = dict(base_params)
+                self.params["accounts[0]"] = "urn:li:sponsoredAccount:{}".format(account_id)
+                self._bookmark_account_id = account_id
+                record_count, bookmark_value = super().sync_endpoint(*args, **kwargs)
+                total_records += record_count or 0
+                if bookmark_value and not isinstance(bookmark_value, dict):
+                    per_account[account_id] = later_bookmark(
+                        per_account.get(account_id), bookmark_value)
+        finally:
+            self._bookmark_account_id = None
+            self._legacy_bookmark_account_id = None
+        return total_records, per_account
 
 class CampaignGroups(LinkedInAds):
     """

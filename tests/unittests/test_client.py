@@ -140,6 +140,17 @@ class TestLinkedInClient(unittest.TestCase):
             "The refresh token is going to expire soon. Please re-authenticate your connection to generate a new token and resume extraction."
         )
 
+    def test_inactive_token_without_created_at(self, mocked_post, mock_write_token):
+        '''An inactive introspection payload may omit created_at and must still count as expired.'''
+        client = _client.LinkedinClient('client_id', 'client_secret', 'refresh_token', 'access_token', 'config_path')
+        mocked_response = mock.Mock()
+        mocked_response.status_code = 200
+        mocked_response.json.return_value = {"active": False}
+        mocked_post.return_value = mocked_response
+
+        expires = client.get_token_expires()
+        self.assertLess(expires, datetime.utcnow())
+
     @mock.patch("tap_linkedin_ads.client.LOGGER")
     def test_refresh_token_empty_expires_after_2_month(self, mock_logger, mocked_post, mock_write_token):
         '''
@@ -158,3 +169,79 @@ class TestLinkedInClient(unittest.TestCase):
 
         client.get_token_expires()
         self.assertEqual(mock_logger.warning.call_count, 0)
+
+
+class TestTokenFile(unittest.TestCase):
+    """Durable token file wins over a stale Meltano config access token."""
+
+    def test_token_file_overlays_matching_refresh_token(self):
+        import tempfile
+        import json as _json
+        import os
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'tokens.json')
+            with open(path, 'w', encoding='utf-8') as handle:
+                _json.dump({
+                    'access_token': 'from-file',
+                    'refresh_token': 'same-refresh',
+                    'refresh_token_expires_at': '2027-10-01T00:00:00Z',
+                }, handle)
+
+            client = _client.LinkedinClient(
+                'client_id', 'client_secret', 'same-refresh', 'from-env',
+                None, token_file_path=path,
+            )
+            client._load_persisted_tokens()
+            self.assertEqual(client.access_token, 'from-file')
+
+    def test_config_refresh_token_wins_after_reauth(self):
+        import tempfile
+        import json as _json
+        import os
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'tokens.json')
+            with open(path, 'w', encoding='utf-8') as handle:
+                _json.dump({
+                    'access_token': 'old-access',
+                    'refresh_token': 'old-refresh',
+                    'refresh_token_expires_at': '2027-10-01T00:00:00Z',
+                }, handle)
+
+            client = _client.LinkedinClient(
+                'client_id', 'client_secret', 'new-refresh', 'new-access',
+                None, token_file_path=path,
+                refresh_token_expires_at='2027-11-01T00:00:00Z',
+            )
+            client._load_persisted_tokens()
+            self.assertEqual(client.access_token, 'new-access')
+            self.assertEqual(client._LinkedinClient__refresh_token, 'new-refresh')
+            with open(path, encoding='utf-8') as handle:
+                written = _json.load(handle)
+            self.assertEqual(written['access_token'], 'new-access')
+            self.assertEqual(written['refresh_token'], 'new-refresh')
+            self.assertEqual(written['refresh_token_expires_at'], '2027-11-01T00:00:00Z')
+
+    def test_rotated_refresh_token_in_file_wins(self):
+        import tempfile
+        import json as _json
+        import os
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'tokens.json')
+            with open(path, 'w', encoding='utf-8') as handle:
+                _json.dump({
+                    'access_token': 'from-file',
+                    'refresh_token': 'rotated-refresh',
+                    'refresh_token_expires_at': '2027-10-01T00:00:00Z',
+                }, handle)
+
+            client = _client.LinkedinClient(
+                'client_id', 'client_secret', 'original-refresh', 'from-env',
+                None, token_file_path=path,
+                refresh_token_expires_at='2027-10-01T00:00:00Z',
+            )
+            client._load_persisted_tokens()
+            self.assertEqual(client.access_token, 'from-file')
+            self.assertEqual(client._LinkedinClient__refresh_token, 'rotated-refresh')

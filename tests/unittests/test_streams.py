@@ -5,7 +5,7 @@ from parameterized import parameterized
 import unittest
 from singer.schema import Schema
 from singer.catalog import Catalog, CatalogEntry
-from tap_linkedin_ads.streams import split_into_chunks, get_next_url, shift_sync_window, merge_responses, sync_analytics_endpoint, STREAMS, LinkedInAds
+from tap_linkedin_ads.streams import split_into_chunks, get_next_url, shift_sync_window, merge_responses, sync_analytics_endpoint, advance_child_bookmark, STREAMS, LinkedInAds
 import tap_linkedin_ads.client as _client
 from tap_linkedin_ads.client import LinkedinClient
 
@@ -387,3 +387,158 @@ class TestLinkedInAds(unittest.TestCase):
             ACCOUNT_OBJ.write_record([], '')
 
         mock_logger.assert_called_with('record: %s', [])
+
+
+class TestAccountUsersMultiAccount(unittest.TestCase):
+    """adAccountUsers only honors the first account, so each id is requested alone."""
+
+    def test_one_request_per_account_and_max_bookmark(self):
+        stream = STREAMS['account_users']()
+        stream.params = {
+            'q': 'accounts',
+            'accounts[0]': 'urn:li:sponsoredAccount:111',
+            'accounts[1]': 'urn:li:sponsoredAccount:222',
+        }
+        seen = []
+
+        def fake_sync(self, *args, **kwargs):
+            seen.append(dict(self.params))
+            if self.params['accounts[0]'].endswith('111'):
+                return 2, '2024-01-01T00:00:00.000000Z'
+            return 3, '2024-06-01T00:00:00.000000Z'
+
+        with mock.patch.object(LinkedInAds, 'sync_endpoint', fake_sync):
+            total, bookmark = stream.sync_endpoint(account_list=['111', '222'])
+
+        self.assertEqual(total, 5)
+        self.assertEqual(bookmark, {
+            '111': '2024-01-01T00:00:00.000000Z',
+            '222': '2024-06-01T00:00:00.000000Z',
+        })
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(seen[0]['accounts[0]'], 'urn:li:sponsoredAccount:111')
+        self.assertEqual(seen[1]['accounts[0]'], 'urn:li:sponsoredAccount:222')
+        self.assertNotIn('accounts[1]', seen[0])
+        self.assertNotIn('accounts[1]', seen[1])
+
+    def test_bookmark_stays_on_each_account(self):
+        stream = STREAMS['account_users']()
+        state = {'bookmarks': {'account_users': {
+            '111': '2024-06-01T00:00:00.000000Z',
+            '222': '2024-02-01T00:00:00.000000Z',
+        }}}
+        stream._bookmark_account_id = '222'
+        self.assertEqual(
+            stream.get_bookmark(state, '2020-01-01T00:00:00Z'),
+            '2024-02-01T00:00:00.000000Z',
+        )
+        stream._bookmark_account_id = '333'
+        self.assertEqual(
+            stream.get_bookmark(state, '2020-01-01T00:00:00Z'),
+            '2020-01-01T00:00:00Z',
+        )
+
+    def test_legacy_string_bookmark_applies_only_to_first_account(self):
+        stream = STREAMS['account_users']()
+        state = {'bookmarks': {'account_users': '2024-06-01T00:00:00.000000Z'}}
+        seen = []
+
+        def fake_sync(self, *args, **kwargs):
+            cursor = self.get_bookmark(kwargs.get('state'), '2020-01-01T00:00:00Z')
+            seen.append(cursor)
+            return 1, cursor
+
+        with mock.patch.object(LinkedInAds, 'sync_endpoint', fake_sync):
+            total, bookmark = stream.sync_endpoint(
+                state=state,
+                account_list=['111', '222'],
+            )
+
+        self.assertEqual(total, 2)
+        self.assertEqual(seen, [
+            '2024-06-01T00:00:00.000000Z',
+            '2020-01-01T00:00:00Z',
+        ])
+        self.assertEqual(bookmark, {
+            '111': '2024-06-01T00:00:00.000000Z',
+            '222': '2020-01-01T00:00:00Z',
+        })
+        self.assertIsNone(stream._bookmark_account_id)
+        self.assertIsNone(stream._legacy_bookmark_account_id)
+
+    def test_single_account_reads_its_cursor_from_dict_bookmark(self):
+        stream = STREAMS['account_users']()
+        state = {'bookmarks': {'account_users': {
+            '111': '2024-06-01T00:00:00.000000Z',
+            '222': '2024-02-01T00:00:00.000000Z',
+        }}}
+        seen = {}
+
+        def fake_sync(self, *args, **kwargs):
+            seen['bookmark'] = self.get_bookmark(kwargs.get('state'), '2020-01-01T00:00:00Z')
+            return 1, seen['bookmark']
+
+        with mock.patch.object(LinkedInAds, 'sync_endpoint', fake_sync):
+            total, bookmark = stream.sync_endpoint(state=state, account_list=['222'])
+
+        self.assertEqual(total, 1)
+        self.assertEqual(seen['bookmark'], '2024-02-01T00:00:00.000000Z')
+        self.assertEqual(bookmark, {
+            '111': '2024-06-01T00:00:00.000000Z',
+            '222': '2024-02-01T00:00:00.000000Z',
+        })
+        self.assertIsNone(stream._bookmark_account_id)
+
+    def test_one_account_sync_keeps_other_account_cursors(self):
+        stream = STREAMS['account_users']()
+        state = {'bookmarks': {'account_users': {
+            '111': '2024-06-01T00:00:00.000000Z',
+            '222': '2024-02-01T00:00:00.000000Z',
+        }}}
+
+        def fake_sync(self, *args, **kwargs):
+            return 1, '2024-07-01T00:00:00.000000Z'
+
+        with mock.patch.object(LinkedInAds, 'sync_endpoint', fake_sync):
+            total, bookmark = stream.sync_endpoint(state=state, account_list=['111'])
+
+        self.assertEqual(total, 1)
+        self.assertEqual(bookmark, {
+            '111': '2024-07-01T00:00:00.000000Z',
+            '222': '2024-02-01T00:00:00.000000Z',
+        })
+
+    def test_older_cursor_does_not_rewind_an_account(self):
+        stream = STREAMS['account_users']()
+        state = {'bookmarks': {'account_users': {
+            '111': '2024-06-01T00:00:00.000000Z',
+        }}}
+
+        def fake_sync(self, *args, **kwargs):
+            return 1, '2024-01-01T00:00:00.000000Z'
+
+        with mock.patch.object(LinkedInAds, 'sync_endpoint', fake_sync):
+            _, bookmark = stream.sync_endpoint(state=state, account_list=['111'])
+
+        self.assertEqual(bookmark['111'], '2024-06-01T00:00:00.000000Z')
+        merged = advance_child_bookmark(
+            {'111': '2024-06-01T00:00:00.000000Z'},
+            {'111': '2024-01-01T00:00:00.000000Z'},
+        )
+        self.assertEqual(merged['111'], '2024-06-01T00:00:00.000000Z')
+
+    def test_child_bookmark_map_is_merged(self):
+        current = {
+            '111': '2024-06-01T00:00:00.000000Z',
+            '222': '2024-02-01T00:00:00.000000Z',
+        }
+        updated = advance_child_bookmark(current, {
+            '111': '2024-08-01T00:00:00.000000Z',
+        })
+        self.assertEqual(updated['111'], '2024-08-01T00:00:00.000000Z')
+        self.assertEqual(updated['222'], '2024-02-01T00:00:00.000000Z')
+        scalar = advance_child_bookmark(
+            '2024-01-01T00:00:00.000000Z',
+            '2024-03-01T00:00:00.000000Z',
+        )
+        self.assertIsNone(scalar)

@@ -1,13 +1,12 @@
 import os
 import unittest
 from datetime import datetime as dt
-from datetime import timedelta
 import time
-import dateutil.parser
 import backoff
 import requests
 
 from tap_tester import menagerie, connections, runner, LOGGER
+from bookmark_state import rewind_bookmark
 
 
 class TestLinkedinAdsBase(unittest.TestCase):
@@ -338,11 +337,9 @@ class TestLinkedinAdsBase(unittest.TestCase):
         stream_to_calculated_state = {stream: "" for stream in current_state['bookmarks'].keys()}
 
         for stream, state in current_state['bookmarks'].items():
-            state_as_datetime = dateutil.parser.parse(state)
             days, hours, minutes = timedelta_by_stream[stream]
-            calculated_state_as_datetime = state_as_datetime - timedelta(days=days, hours=hours, minutes=minutes)
-            calculated_state_formatted = dt.strftime(calculated_state_as_datetime, self.BOOKMARK_FORMAT)
-            stream_to_calculated_state[stream] = calculated_state_formatted
+            stream_to_calculated_state[stream] = rewind_bookmark(
+                state, days, hours, minutes, self.BOOKMARK_FORMAT)
         return stream_to_calculated_state
 
     ##########################################################################

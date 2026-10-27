@@ -1,9 +1,12 @@
 {
-  "client_id": "abc",
-  "client_secret": "xyz",
+  "client_id": "YOUR_CLIENT_ID",
+  "client_secret": "YOUR_CLIENT_SECRET",
+  "refresh_token": "YOUR_REFRESH_TOKEN",
+  "access_token": "YOUR_ACCESS_TOKEN",
+  "refresh_token_expires_at": "2027-10-14T00:00:00Z",
+  "token_file_path": "/absolute/path/linkedin-ads-tokens.json",
   "user_agent": "tap-linkedin-ads <api_user_email@your_company.com>",
-  "refresh_token": "xyz",
-  "accounts":"null",
-  "start_date": "2019-01-01T00:00:00Z",
+  "accounts": "123456789",
+  "start_date": "2024-01-01T00:00:00Z",
   "request_timeout": 300
 }
