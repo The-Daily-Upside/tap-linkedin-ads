@@ -5,6 +5,7 @@ from datetime import timedelta
 from datetime import datetime as dt
 
 from base import TestLinkedinAdsBase
+from bookmark_state import bookmark_for_record
 
 class BookmarkTest(TestLinkedinAdsBase):
     """Test tap sets a bookmark and respects it for the next sync of a stream"""
@@ -133,22 +134,25 @@ class BookmarkTest(TestLinkedinAdsBase):
 
                         # Verify the first sync bookmark value is the max replication key value for a given stream
                         replication_key_value = record.get(replication_key)
+                        first_cursor = bookmark_for_record(first_bookmark_value, record)
 
                         self.assertLessEqual(
-                            replication_key_value, first_bookmark_value,
+                            replication_key_value, first_cursor,
                             msg="First sync bookmark was set incorrectly, a record with a greater replication-key value was synced."
                         )
 
                     for record in second_sync_messages:
                         # Verify the second sync replication key value is Greater or Equal to the simulated bookmark
                         replication_key_value = record.get(replication_key)
+                        simulated_cursor = bookmark_for_record(simulated_bookmark_value, record)
+                        second_cursor = bookmark_for_record(second_bookmark_value, record)
 
-                        self.assertGreaterEqual(replication_key_value, simulated_bookmark_value,
+                        self.assertGreaterEqual(replication_key_value, simulated_cursor,
                                                 msg="Second sync records do not respect the previous bookmark.")
 
                         # Verify the second sync bookmark value is the max replication key value for a given stream
                         self.assertLessEqual(
-                            replication_key_value, second_bookmark_value,
+                            replication_key_value, second_cursor,
                             msg="Second sync bookmark was set incorrectly, a record with a greater replication-key value was synced."
                         )
 
