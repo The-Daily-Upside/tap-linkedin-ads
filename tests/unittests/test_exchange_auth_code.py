@@ -63,6 +63,28 @@ class TestOAuthStateCheck(unittest.TestCase):
             self.assertEqual(exchange.main(argv), 1)
         exchange_call.assert_not_called()
 
+    def test_code_flag_is_accepted_when_redirect_url_has_state(self):
+        argv = BASE + [
+            "--state", "expected-state-value",
+            "--code", "one-time-code",
+            "--redirect-url", "http://localhost:8080/callback?state=expected-state-value",
+        ]
+        with mock.patch.object(exchange, "_exchange", return_value=0) as exchange_call:
+            self.assertEqual(exchange.main(argv), 0)
+        exchange_call.assert_called_once()
+        self.assertEqual(exchange_call.call_args.args[0].code, "one-time-code")
+
+    def test_redirect_url_without_state_does_not_accept_separate_code(self):
+        argv = BASE + [
+            "--state", "expected-state-value",
+            "--returned-state", "expected-state-value",
+            "--code", "one-time-code",
+            "--redirect-url", "http://localhost:8080/callback",
+        ]
+        with mock.patch.object(exchange, "_exchange") as exchange_call:
+            self.assertEqual(exchange.main(argv), 1)
+        exchange_call.assert_not_called()
+
     def test_redirect_url_blank_state_does_not_exchange(self):
         argv = BASE + [
             "--state", "expected-state-value",

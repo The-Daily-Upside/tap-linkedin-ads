@@ -65,12 +65,10 @@ def _fill_code_and_returned_state(args):
     parsed_state = (query.get("state") or [None])[0]
     if isinstance(parsed_state, str):
         parsed_state = parsed_state.strip() or None
+    if not parsed_state:
+        return "--redirect-url must include the returned state."
     if args.code and parsed_code and args.code != parsed_code:
         return "--code does not match the code in --redirect-url."
-    # A code that arrived without state must not be paired with a separate
-    # --returned-state. That argument was never on this redirect.
-    if parsed_code and not parsed_state:
-        return "--redirect-url must include the returned state."
     if args.returned_state and parsed_state and not _states_match(args.returned_state, parsed_state):
         return "--returned-state does not match the state in --redirect-url."
     if not args.code:
